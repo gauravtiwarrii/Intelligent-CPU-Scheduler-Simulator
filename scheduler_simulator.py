@@ -9,7 +9,7 @@ import pandas as pd
 import csv
 from datetime import datetime
 
-# --- Module 1: Core Scheduler Engine (Unchanged) ---
+# --- Module 1: Core Scheduler Engine ---
 class Process:
     def __init__(self, pid, arrival_time, burst_time, priority=0):
         self.pid = pid
@@ -171,7 +171,11 @@ def calculate_metrics(processes):
         raise ValueError("Invalid process list passed to calculate_metrics")
     avg_waiting = sum(p.waiting_time for p in processes) / len(processes)
     avg_turnaround = sum(p.turnaround_time for p in processes) / len(processes)
-    return avg_waiting, avg_turnaround
+    total_burst = sum(p.burst_time for p in processes)
+    total_time = max(p.end_time for p in processes) if processes else 0
+    cpu_utilization = (total_burst / total_time * 100) if total_time > 0 else 0
+    throughput = len(processes) / total_time if total_time > 0 else 0
+    return avg_waiting, avg_turnaround, cpu_utilization, throughput
 
 # --- Module 2: Enhanced Interactive GUI with Separate Gantt Window ---
 class SchedulerGUI:
@@ -187,7 +191,9 @@ class SchedulerGUI:
         self.timeline = None
         self.gantt_window = None
         
+        # Set initial theme
         self.root.set_theme("radiance")
+        self.current_theme = "radiance"
         
         main_frame = tk.Frame(root, bg="#f0f8ff")
         main_frame.pack(fill="both", expand=True)
@@ -238,6 +244,14 @@ class SchedulerGUI:
         quantum_entry.grid(row=1, column=1, padx=10, pady=5)
         self.add_tooltip(quantum_entry, "Set quantum for Round Robin (default: 2)")
         
+        # Theme selector
+        ttk.Label(algo_frame, text="Theme:").grid(row=1, column=4, padx=10, pady=5)
+        self.theme_var = tk.StringVar(value="radiance")
+        themes = ["radiance", "equilux", "arc", "breeze"]
+        theme_menu = ttk.OptionMenu(algo_frame, self.theme_var, "radiance", *themes, command=self.change_theme)
+        theme_menu.grid(row=1, column=5, padx=10, pady=5)
+        self.add_tooltip(theme_menu, "Select UI theme (e.g., 'equilux' for dark mode)")
+        
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(pady=15, padx=10)
         buttons = [
@@ -256,8 +270,47 @@ class SchedulerGUI:
         
         self.result_frame = ttk.LabelFrame(main_frame, text="Simulation Results", padding=15)
         self.result_frame.pack(fill="both", expand=True, pady=10, padx=10)
-        self.result_text = tk.Text(self.result_frame, height=10, width=100, font=("Courier", 11), bg="#f0f8ff")
-        self.result_text.pack(padx=10, pady=5)
+        
+        # Summary frame for metrics
+        self.summary_frame = ttk.Frame(self.result_frame)
+        self.summary_frame.pack(fill="x", pady=5)
+        
+        self.algo_label = ttk.Label(self.summary_frame, text="Algorithm: N/A", font=("Helvetica", 12, "bold"))
+        self.algo_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        
+        self.wait_label = ttk.Label(self.summary_frame, text="Avg Waiting Time: N/A", font=("Helvetica", 11))
+        self.wait_label.grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        
+        self.turn_label = ttk.Label(self.summary_frame, text="Avg Turnaround Time: N/A", font=("Helvetica", 11))
+        self.turn_label.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        
+        self.cpu_label = ttk.Label(self.summary_frame, text="CPU Utilization: N/A", font=("Helvetica", 11))
+        self.cpu_label.grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        
+        self.throughput_label = ttk.Label(self.summary_frame, text="Throughput: N/A", font=("Helvetica", 11))
+        self.throughput_label.grid(row=2, column=1, sticky="w", padx=5, pady=2)
+        
+        # Treeview for process details
+        self.result_tree = ttk.Treeview(self.result_frame, columns=("PID", "Start", "End", "Waiting", "Turnaround"), 
+                                        show="headings", height=10)
+        self.result_tree.heading("PID", text="PID")
+        self.result_tree.heading("Start", text="Start Time")
+        self.result_tree.heading("End", text="End Time")
+        self.result_tree.heading("Waiting", text="Waiting Time")
+        self.result_tree.heading("Turnaround", text="Turnaround Time")
+        
+        self.result_tree.column("PID", width=100, anchor="center")
+        self.result_tree.column("Start", width=100, anchor="center")
+        self.result_tree.column("End", width=100, anchor="center")
+        self.result_tree.column("Waiting", width=100, anchor="center")
+        self.result_tree.column("Turnaround", width=100, anchor="center")
+        
+        self.result_tree.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Scrollbar for Treeview
+        scrollbar = ttk.Scrollbar(self.result_frame, orient="vertical", command=self.result_tree.yview)
+        self.result_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
 
     def add_process_row(self):
         row = len(self.process_entries) + 1
@@ -326,9 +379,8 @@ class SchedulerGUI:
             self.timeline = timeline
             self.current_processes = processes
             self.current_algo_name = algo_name
-            avg_wait, avg_turn = calculate_metrics(processes)
-            self.display_results(processes, algo_name, avg_wait, avg_turn)
-            # Remove embedded Gantt chart from main window
+            avg_wait, avg_turn, cpu_util, throughput = calculate_metrics(processes)
+            self.display_results(processes, algo_name, avg_wait, avg_turn, cpu_util, throughput)
             if self.canvas_widget:
                 self.canvas_widget.get_tk_widget().destroy()
                 self.canvas_widget = None
@@ -370,22 +422,33 @@ class SchedulerGUI:
             for algo in algorithms:
                 proc_copy = [Process(p.pid, p.arrival_time, p.burst_time, p.priority) for p in self.processes]
                 proc_result, algo_name, _ = algo(proc_copy)
-                avg_wait, _ = calculate_metrics(proc_result)
-                results[algo_name] = avg_wait
+                avg_wait, _, cpu_util, throughput = calculate_metrics(proc_result)
+                results[algo_name] = {'avg_wait': avg_wait, 'cpu_util': cpu_util, 'throughput': throughput}
             self.plot_comparison(results)
         
         except ValueError as e:
             messagebox.showerror("Error", str(e))
 
-    def display_results(self, processes, algo_name, avg_wait, avg_turn):
-        self.result_text.delete(1.0, tk.END)
-        self.result_text.insert(tk.END, f"Algorithm: {algo_name}\n")
-        self.result_text.insert(tk.END, f"Avg Waiting Time: {avg_wait:.2f}\n")
-        self.result_text.insert(tk.END, f"Avg Turnaround Time: {avg_turn:.2f}\n")
-        self.result_text.insert(tk.END, "-" * 60 + "\n")
-        self.result_text.insert(tk.END, "PID | Start | End | Waiting | Turnaround\n")
+    def display_results(self, processes, algo_name, avg_wait, avg_turn, cpu_util, throughput):
+        # Update summary labels
+        bg_color = "#2e2e2e" if self.current_theme == "equilux" else "#f0f8ff"
+        fg_color = "white" if self.current_theme == "equilux" else "black"
+        
+        self.algo_label.config(text=f"Algorithm: {algo_name}", foreground=fg_color)
+        self.wait_label.config(text=f"Avg Waiting Time: {avg_wait:.2f}", foreground=fg_color)
+        self.turn_label.config(text=f"Avg Turnaround Time: {avg_turn:.2f}", foreground=fg_color)
+        self.cpu_label.config(text=f"CPU Utilization: {cpu_util:.2f}%", foreground=fg_color)
+        self.throughput_label.config(text=f"Throughput: {throughput:.4f} processes/unit time", foreground=fg_color)
+        
+        self.summary_frame.config(style="Custom.TFrame")
+        style = ttk.Style()
+        style.configure("Custom.TFrame", background=bg_color)
+        
+        # Clear and populate Treeview
+        for item in self.result_tree.get_children():
+            self.result_tree.delete(item)
         for p in processes:
-            self.result_text.insert(tk.END, f"{p.pid:<5} | {p.start_time:<6} | {p.end_time:<4} | {p.waiting_time:<7} | {p.turnaround_time}\n")
+            self.result_tree.insert("", "end", values=(p.pid, p.start_time, p.end_time, p.waiting_time, p.turnaround_time))
 
     def plot_gantt(self, processes, algo_name, timeline, animate=False):
         if self.gantt_window:
@@ -395,23 +458,26 @@ class SchedulerGUI:
         self.gantt_window.title(f"Gantt Chart - {algo_name}")
         self.gantt_window.geometry("1000x600")
         
-        fig, ax = plt.subplots(figsize=(14, 6), facecolor="#f0f8ff")  # Increased figure size
+        bg_color = "#2e2e2e" if self.current_theme == "equilux" else "#f0f8ff"
+        text_color = "white" if self.current_theme == "equilux" else "#333333"
+        fig, ax = plt.subplots(figsize=(14, 6), facecolor=bg_color)
         colors = plt.cm.Set3(np.linspace(0, 1, len(processes)))
         
         ax.set_ylim(0, 1.5)
         max_time = max(t[2] for t in timeline) + 1 if timeline else max(p.end_time for p in processes) + 1
         ax.set_xlim(0, max_time)
-        ax.set_xlabel("Time (ms)", fontsize=16, color="#333333", fontweight='bold')
+        ax.set_xlabel("Time (ms)", fontsize=16, color=text_color, fontweight='bold')
         ax.set_yticks([])
-        ax.set_title(f"Gantt Chart - {algo_name}", fontsize=20, color="#333333", pad=20, fontweight='bold')
+        ax.set_title(f"Gantt Chart - {algo_name}", fontsize=20, color=text_color, pad=30, fontweight='bold')
         ax.grid(True, linestyle='--', alpha=0.5, color='gray')
-        ax.set_facecolor("#e6f0ff")  # Lighter background for contrast
+        ax.set_facecolor("#3c3f41" if self.current_theme == "equilux" else "#e6f0ff")
         
         legend_elements = [plt.Line2D([0], [0], marker='s', color=colors[i], label=p.pid, 
                                      markersize=15, markerfacecolor=colors[i], markeredgecolor='black') 
                           for i, p in enumerate(processes)]
-        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.15), ncol=len(processes), 
-                  frameon=True, fontsize=12, title="Processes", title_fontsize=14, facecolor="#f0f8ff", edgecolor='black')
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.25), ncol=len(processes), 
+                  frameon=True, fontsize=12, title="Processes", title_fontsize=14, 
+                  facecolor=bg_color, edgecolor='white' if self.current_theme == "equilux" else 'black')
 
         if animate:
             self.anim_running = True
@@ -420,13 +486,14 @@ class SchedulerGUI:
                 ax.clear()
                 ax.set_ylim(0, 1.5)
                 ax.set_xlim(0, max_time)
-                ax.set_xlabel("Time (ms)", fontsize=16, color="#333333", fontweight='bold')
+                ax.set_xlabel("Time (ms)", fontsize=16, color=text_color, fontweight='bold')
                 ax.set_yticks([])
-                ax.set_title(f"Gantt Chart - {algo_name}", fontsize=20, color="#333333", pad=20, fontweight='bold')
+                ax.set_title(f"Gantt Chart - {algo_name}", fontsize=20, color=text_color, pad=30, fontweight='bold')
                 ax.grid(True, linestyle='--', alpha=0.5, color='gray')
-                ax.set_facecolor("#e6f0ff")
-                ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.15), ncol=len(processes), 
-                          frameon=True, fontsize=12, title="Processes", title_fontsize=14, facecolor="#f0f8ff", edgecolor='black')
+                ax.set_facecolor("#3c3f41" if self.current_theme == "equilux" else "#e6f0ff")
+                ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.25), ncol=len(processes), 
+                          frameon=True, fontsize=12, title="Processes", title_fontsize=14, 
+                          facecolor=bg_color, edgecolor='white' if self.current_theme == "equilux" else 'black')
                 
                 for pid, start, end in timeline[:frame + 1]:
                     idx = [p.pid for p in processes].index(pid)
@@ -442,6 +509,7 @@ class SchedulerGUI:
                 ax.broken_barh([(start, end - start)], (0, 1), facecolors=color, edgecolors='black', linewidth=2, alpha=0.9)
                 ax.text(start + (end - start) / 2, 0.5, pid, ha='center', va='center', fontsize=14, color='white', fontweight='bold')
 
+        plt.subplots_adjust(top=0.85)
         plt.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.gantt_window)
         canvas.draw()
@@ -450,7 +518,7 @@ class SchedulerGUI:
     def plot_comparison(self, results):
         fig, ax = plt.subplots(figsize=(12, 6), facecolor="#f0f8ff")
         algos = list(results.keys())
-        waits = list(results.values())
+        waits = [results[algo]['avg_wait'] for algo in algos]
         colors = plt.cm.Set3(np.linspace(0, 1, len(algos)))
         bars = ax.bar(algos, waits, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
         ax.set_ylabel("Average Waiting Time (ms)", fontsize=14, color="#333333")
@@ -490,7 +558,7 @@ class SchedulerGUI:
         arrival_entry.insert(0, "0")
         burst_entry.insert(0, "0")
         priority_entry.insert(0, "0")
-        self.result_text.delete(1.0, tk.END)
+        self.display_results([], "N/A", 0, 0, 0, 0)  # Reset results
         if self.canvas_widget:
             self.canvas_widget.get_tk_widget().destroy()
             self.canvas_widget = None
@@ -500,6 +568,21 @@ class SchedulerGUI:
         self.anim_running = False
         self.anim = None
         self.timeline = None
+
+    def change_theme(self, theme):
+        if theme != self.current_theme:
+            self.root.set_theme(theme)
+            self.current_theme = theme
+            bg_color = "#2e2e2e" if theme == "equilux" else "#f0f8ff"
+            self.root.configure(bg=bg_color)
+            main_frame = self.root.winfo_children()[0]
+            main_frame.configure(bg=bg_color)
+            self.canvas.configure(bg=bg_color)
+            self.display_results(self.current_processes if hasattr(self, 'current_processes') else [], 
+                                self.current_algo_name if hasattr(self, 'current_algo_name') else "N/A",
+                                *calculate_metrics(self.current_processes) if hasattr(self, 'current_processes') else (0, 0, 0, 0))
+            if self.gantt_window:
+                self.plot_gantt(self.current_processes, self.current_algo_name, self.timeline, animate=self.anim_running)
 
     def add_tooltip(self, widget, text):
         def enter(event):
