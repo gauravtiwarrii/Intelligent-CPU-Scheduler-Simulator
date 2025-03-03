@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from ttkthemes import ThemedTk
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.animation import FuncAnimation
 import numpy as np
 import pandas as pd
 import csv
@@ -24,19 +25,22 @@ class Process:
 def fcfs_scheduler(processes):
     processes.sort(key=lambda x: x.arrival_time)
     current_time = 0
+    timeline = []
     for p in processes:
         p.start_time = max(current_time, p.arrival_time)
         p.end_time = p.start_time + p.burst_time
         p.waiting_time = p.start_time - p.arrival_time
         p.turnaround_time = p.end_time - p.arrival_time
+        timeline.append((p.pid, p.start_time, p.end_time))
         current_time = p.end_time
-    return processes, "FCFS (Non-Preemptive)"
+    return processes, "FCFS (Non-Preemptive)", timeline
 
 def sjf_non_preemptive(processes):
     processes.sort(key=lambda x: (x.arrival_time, x.burst_time))
     current_time = 0
     completed = []
     remaining = processes.copy()
+    timeline = []
     while remaining:
         available = [p for p in remaining if p.arrival_time <= current_time]
         if not available:
@@ -48,13 +52,10 @@ def sjf_non_preemptive(processes):
         p.waiting_time = p.start_time - p.arrival_time
         p.turnaround_time = p.end_time - p.arrival_time
         current_time = p.end_time
+        timeline.append((p.pid, p.start_time, p.end_time))
         completed.append(p)
         remaining.remove(p)
-    for p in processes:
-        if p not in completed:
-            p.start_time = p.end_time = p.waiting_time = p.turnaround_time = 0
-            completed.append(p)
-    return completed, "SJF (Non-Preemptive)"
+    return completed, "SJF (Non-Preemptive)", timeline
 
 def sjf_preemptive(processes):
     processes.sort(key=lambda x: x.arrival_time)
@@ -82,10 +83,6 @@ def sjf_preemptive(processes):
                 remaining.remove(p)
         else:
             current_time += 1
-    for p in processes:
-        if p not in completed:
-            p.start_time = p.end_time = p.waiting_time = p.turnaround_time = 0
-            completed.append(p)
     return completed, "SJF (Preemptive - SRTF)", timeline
 
 def rr_scheduler(processes, quantum):
@@ -109,9 +106,6 @@ def rr_scheduler(processes, quantum):
             p.end_time = current_time
             p.turnaround_time = p.end_time - p.arrival_time
             p.waiting_time = p.turnaround_time - p.burst_time
-    for p in processes:
-        if not hasattr(p, 'end_time') or p.end_time == 0:
-            p.start_time = p.end_time = p.waiting_time = p.turnaround_time = 0
     return processes, "Round Robin", timeline
 
 def priority_non_preemptive(processes):
@@ -119,6 +113,7 @@ def priority_non_preemptive(processes):
     current_time = 0
     completed = []
     remaining = processes.copy()
+    timeline = []
     while remaining:
         available = [p for p in remaining if p.arrival_time <= current_time]
         if not available:
@@ -130,13 +125,10 @@ def priority_non_preemptive(processes):
         p.waiting_time = p.start_time - p.arrival_time
         p.turnaround_time = p.end_time - p.arrival_time
         current_time = p.end_time
+        timeline.append((p.pid, p.start_time, p.end_time))
         completed.append(p)
         remaining.remove(p)
-    for p in processes:
-        if p not in completed:
-            p.start_time = p.end_time = p.waiting_time = p.turnaround_time = 0
-            completed.append(p)
-    return completed, "Priority (Non-Preemptive)"
+    return completed, "Priority (Non-Preemptive)", timeline
 
 def priority_preemptive(processes):
     processes.sort(key=lambda x: x.arrival_time)
@@ -164,10 +156,6 @@ def priority_preemptive(processes):
                 remaining.remove(p)
         else:
             current_time += 1
-    for p in processes:
-        if p not in completed:
-            p.start_time = p.end_time = p.waiting_time = p.turnaround_time = 0
-            completed.append(p)
     return completed, "Priority (Preemptive)", timeline
 
 def intelligent_scheduler(processes, quantum=2):
@@ -185,7 +173,7 @@ def calculate_metrics(processes):
     avg_turnaround = sum(p.turnaround_time for p in processes) / len(processes)
     return avg_waiting, avg_turnaround
 
-# --- Module 2: Enhanced Interactive GUI ---
+# --- Module 2: Enhanced Interactive GUI with Separate Gantt Window ---
 class SchedulerGUI:
     def __init__(self, root):
         self.root = root
@@ -194,20 +182,22 @@ class SchedulerGUI:
         self.processes = []
         self.process_entries = []
         self.canvas_widget = None
+        self.anim_running = False
+        self.anim = None
+        self.timeline = None
+        self.gantt_window = None
         
         self.root.set_theme("radiance")
         
-        # Main Frame with Gradient Background
         main_frame = tk.Frame(root, bg="#f0f8ff")
         main_frame.pack(fill="both", expand=True)
         
-        # Process Input Section
-        input_frame = ttk.LabelFrame(main_frame, text="Process Configuration", padding=15, style="TFrame")
+        input_frame = ttk.LabelFrame(main_frame, text="Process Configuration", padding=15)
         input_frame.pack(fill="x", pady=10, padx=10)
         
         self.canvas = tk.Canvas(input_frame, height=250, bg="#f0f8ff")
         scrollbar = ttk.Scrollbar(input_frame, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = ttk.Frame(self.canvas, style="TFrame")
+        self.scrollable_frame = ttk.Frame(self.canvas)
         
         self.scrollable_frame.bind(
             "<Configure>",
@@ -219,7 +209,6 @@ class SchedulerGUI:
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Headers with Tooltips
         headers = ["PID", "Arrival", "Burst", "Priority", "Actions"]
         for i, header in enumerate(headers):
             label = ttk.Label(self.scrollable_frame, text=header, font=("Helvetica", 12, "bold"))
@@ -228,10 +217,9 @@ class SchedulerGUI:
         
         self.add_process_row()
         
-        ttk.Button(input_frame, text="Add Process", command=self.add_process_row, style="TButton").pack(pady=10)
+        ttk.Button(input_frame, text="Add Process", command=self.add_process_row).pack(pady=10)
         
-        # Algorithm Selection
-        algo_frame = ttk.LabelFrame(main_frame, text="Algorithm & Settings", padding=15, style="TFrame")
+        algo_frame = ttk.LabelFrame(main_frame, text="Algorithm & Settings", padding=15)
         algo_frame.pack(fill="x", pady=10, padx=10)
         self.algo_var = tk.StringVar(value="Intelligent")
         algos = [
@@ -250,24 +238,25 @@ class SchedulerGUI:
         quantum_entry.grid(row=1, column=1, padx=10, pady=5)
         self.add_tooltip(quantum_entry, "Set quantum for Round Robin (default: 2)")
         
-        # Control Buttons with Tooltips
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(pady=15, padx=10)
         buttons = [
             ("Run Simulation", self.run_simulation, "Run the selected scheduling algorithm"),
+            ("View Gantt Chart", self.view_gantt_chart, "View Gantt chart in a new window"),
+            ("Start Animation", self.start_animation, "Start real-time animation in new window"),
+            ("Stop Animation", self.stop_animation, "Stop real-time animation"),
             ("Compare All", self.compare_all, "Compare all algorithms' performance"),
             ("Export Results", self.export_results, "Export results to CSV"),
             ("Reset", self.reset, "Reset all inputs and results")
         ]
         for text, cmd, tip in buttons:
-            btn = ttk.Button(control_frame, text=text, command=cmd, style="TButton")
+            btn = ttk.Button(control_frame, text=text, command=cmd)
             btn.pack(side="left", padx=10)
             self.add_tooltip(btn, tip)
         
-        # Results Section
-        self.result_frame = ttk.LabelFrame(main_frame, text="Simulation Results", padding=15, style="TFrame")
+        self.result_frame = ttk.LabelFrame(main_frame, text="Simulation Results", padding=15)
         self.result_frame.pack(fill="both", expand=True, pady=10, padx=10)
-        self.result_text = tk.Text(self.result_frame, height=10, width=100, font=("Courier", 11), bg="#f0f8ff", fg="#333333")
+        self.result_text = tk.Text(self.result_frame, height=10, width=100, font=("Courier", 11), bg="#f0f8ff")
         self.result_text.pack(padx=10, pady=5)
 
     def add_process_row(self):
@@ -286,7 +275,7 @@ class SchedulerGUI:
         burst_entry.grid(row=row, column=2, padx=10, pady=5)
         priority_entry.grid(row=row, column=3, padx=10, pady=5)
         
-        remove_btn = ttk.Button(self.scrollable_frame, text="Remove", command=lambda: self.remove_process_row(row-1), style="TButton")
+        remove_btn = ttk.Button(self.scrollable_frame, text="Remove", command=lambda: self.remove_process_row(row-1))
         remove_btn.grid(row=row, column=4, padx=10, pady=5)
         self.add_tooltip(remove_btn, "Remove this process")
         
@@ -295,12 +284,8 @@ class SchedulerGUI:
 
     def remove_process_row(self, index):
         if len(self.process_entries) > 1:
-            pid_entry, arrival_entry, burst_entry, priority_entry, remove_btn = self.process_entries.pop(index)
-            pid_entry.destroy()
-            arrival_entry.destroy()
-            burst_entry.destroy()
-            priority_entry.destroy()
-            remove_btn.destroy()
+            for widget in self.process_entries.pop(index):
+                widget.destroy()
             for i, (pid_e, *_) in enumerate(self.process_entries):
                 pid_e.delete(0, tk.END)
                 pid_e.insert(0, f"P{i+1}")
@@ -323,34 +308,55 @@ class SchedulerGUI:
             algo = self.algo_var.get()
             quantum = int(self.quantum_var.get())
             if algo == "FCFS":
-                processes, algo_name = fcfs_scheduler(self.processes[:])
-                timeline = None
+                processes, algo_name, timeline = fcfs_scheduler(self.processes[:])
             elif algo == "SJF-NP":
-                processes, algo_name = sjf_non_preemptive(self.processes[:])
-                timeline = None
+                processes, algo_name, timeline = sjf_non_preemptive(self.processes[:])
             elif algo == "SJF-P":
                 processes, algo_name, timeline = sjf_preemptive(self.processes[:])
             elif algo == "RR":
                 processes, algo_name, timeline = rr_scheduler(self.processes[:], quantum)
             elif algo == "PR-NP":
-                processes, algo_name = priority_non_preemptive(self.processes[:])
-                timeline = None
+                processes, algo_name, timeline = priority_non_preemptive(self.processes[:])
             elif algo == "PR-P":
                 processes, algo_name, timeline = priority_preemptive(self.processes[:])
             else:  # Intelligent
                 result = intelligent_scheduler(self.processes[:], quantum)
-                if isinstance(result, tuple) and len(result) >= 2:
-                    processes, algo_name = result[0], result[1]
-                    timeline = result[2] if len(result) > 2 else None
-                else:
-                    raise ValueError("Invalid result from intelligent_scheduler")
+                processes, algo_name, timeline = result if len(result) == 3 else (result[0], result[1], None)
             
+            self.timeline = timeline
+            self.current_processes = processes
+            self.current_algo_name = algo_name
             avg_wait, avg_turn = calculate_metrics(processes)
             self.display_results(processes, algo_name, avg_wait, avg_turn)
-            self.plot_gantt(processes, algo_name, timeline)
+            # Remove embedded Gantt chart from main window
+            if self.canvas_widget:
+                self.canvas_widget.get_tk_widget().destroy()
+                self.canvas_widget = None
         
         except ValueError as e:
             messagebox.showerror("Error", str(e))
+
+    def view_gantt_chart(self):
+        if not hasattr(self, 'timeline') or not self.timeline:
+            messagebox.showwarning("Warning", "Run a simulation first!")
+            return
+        self.plot_gantt(self.current_processes, self.current_algo_name, self.timeline, animate=False)
+
+    def start_animation(self):
+        if not hasattr(self, 'timeline') or not self.timeline:
+            messagebox.showwarning("Warning", "Run a simulation first!")
+            return
+        if self.anim_running:
+            self.stop_animation()
+        self.plot_gantt(self.current_processes, self.current_algo_name, self.timeline, animate=True)
+
+    def stop_animation(self):
+        if self.anim and self.anim_running:
+            self.anim.event_source.stop()
+            self.anim_running = False
+            if self.gantt_window:
+                self.gantt_window.destroy()
+                self.gantt_window = None
 
     def compare_all(self):
         try:
@@ -363,10 +369,9 @@ class SchedulerGUI:
             results = {}
             for algo in algorithms:
                 proc_copy = [Process(p.pid, p.arrival_time, p.burst_time, p.priority) for p in self.processes]
-                proc_result, algo_name = algo(proc_copy)[:2]
+                proc_result, algo_name, _ = algo(proc_copy)
                 avg_wait, _ = calculate_metrics(proc_result)
                 results[algo_name] = avg_wait
-            
             self.plot_comparison(results)
         
         except ValueError as e:
@@ -382,52 +387,65 @@ class SchedulerGUI:
         for p in processes:
             self.result_text.insert(tk.END, f"{p.pid:<5} | {p.start_time:<6} | {p.end_time:<4} | {p.waiting_time:<7} | {p.turnaround_time}\n")
 
-    def plot_gantt(self, processes, algo_name, timeline=None):
-        if self.canvas_widget:
-            self.canvas_widget.destroy()
+    def plot_gantt(self, processes, algo_name, timeline, animate=False):
+        if self.gantt_window:
+            self.gantt_window.destroy()
         
-        print(f"Plotting Gantt for {algo_name} with {len(processes)} processes")
-        for p in processes:
-            print(f"Process {p.pid}: start_time={p.start_time}, end_time={p.end_time}, burst_time={p.burst_time}")
+        self.gantt_window = tk.Toplevel(self.root)
+        self.gantt_window.title(f"Gantt Chart - {algo_name}")
+        self.gantt_window.geometry("1000x600")
         
-        fig, ax = plt.subplots(figsize=(12, 4), facecolor="#f0f8ff")
+        fig, ax = plt.subplots(figsize=(14, 6), facecolor="#f0f8ff")  # Increased figure size
         colors = plt.cm.Set3(np.linspace(0, 1, len(processes)))
         
-        if timeline:  # Preemptive case
-            for i, (pid, start, end) in enumerate(timeline):
-                color = colors[[p.pid for p in processes].index(pid)]
-                ax.broken_barh([(start, end-start)], (0, 1), facecolors=color, edgecolors='black', linewidth=2, alpha=0.8)
-                ax.text(start + (end-start)/2, 0.5, pid, ha='center', va='center', fontsize=12, color='white', fontweight='bold')
-        else:  # Non-preemptive case
-            for i, p in enumerate(processes):
-                if p.burst_time > 0:  # Only draw if burst time is positive
-                    color = colors[i % len(colors)]
-                    ax.broken_barh([(p.start_time, p.burst_time)], (0, 1), facecolors=color, edgecolors='black', linewidth=2, alpha=0.8)
-                    ax.text(p.start_time + p.burst_time/2, 0.5, p.pid, ha='center', va='center', fontsize=12, color='white', fontweight='bold')
-        
-        ax.set_ylim(0, 1.5)  # Increase height for legend space
-        ax.set_xlim(0, max(p.end_time for p in processes if p.end_time > 0) + 1)
-        ax.set_xlabel("Time (ms)", fontsize=14, color="#333333")
+        ax.set_ylim(0, 1.5)
+        max_time = max(t[2] for t in timeline) + 1 if timeline else max(p.end_time for p in processes) + 1
+        ax.set_xlim(0, max_time)
+        ax.set_xlabel("Time (ms)", fontsize=16, color="#333333", fontweight='bold')
         ax.set_yticks([])
-        ax.set_title(f"Gantt Chart - {algo_name}", fontsize=18, color="#333333", pad=15)
-        ax.grid(True, linestyle='--', alpha=0.3, color='gray')
+        ax.set_title(f"Gantt Chart - {algo_name}", fontsize=20, color="#333333", pad=20, fontweight='bold')
+        ax.grid(True, linestyle='--', alpha=0.5, color='gray')
+        ax.set_facecolor("#e6f0ff")  # Lighter background for contrast
         
-        # Customize background and tick labels
-        ax.set_facecolor("#f0f8ff")
-        ax.tick_params(axis='x', colors='#333333', labelsize=12)
-        
-        # Add a legend
         legend_elements = [plt.Line2D([0], [0], marker='s', color=colors[i], label=p.pid, 
                                      markersize=15, markerfacecolor=colors[i], markeredgecolor='black') 
                           for i, p in enumerate(processes)]
-        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.2), ncol=len(processes), 
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.15), ncol=len(processes), 
                   frameon=True, fontsize=12, title="Processes", title_fontsize=14, facecolor="#f0f8ff", edgecolor='black')
-        
+
+        if animate:
+            self.anim_running = True
+            
+            def update(frame):
+                ax.clear()
+                ax.set_ylim(0, 1.5)
+                ax.set_xlim(0, max_time)
+                ax.set_xlabel("Time (ms)", fontsize=16, color="#333333", fontweight='bold')
+                ax.set_yticks([])
+                ax.set_title(f"Gantt Chart - {algo_name}", fontsize=20, color="#333333", pad=20, fontweight='bold')
+                ax.grid(True, linestyle='--', alpha=0.5, color='gray')
+                ax.set_facecolor("#e6f0ff")
+                ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(0, 1.15), ncol=len(processes), 
+                          frameon=True, fontsize=12, title="Processes", title_fontsize=14, facecolor="#f0f8ff", edgecolor='black')
+                
+                for pid, start, end in timeline[:frame + 1]:
+                    idx = [p.pid for p in processes].index(pid)
+                    color = colors[idx]
+                    ax.broken_barh([(start, end - start)], (0, 1), facecolors=color, edgecolors='black', linewidth=2, alpha=0.9)
+                    ax.text(start + (end - start) / 2, 0.5, pid, ha='center', va='center', fontsize=14, color='white', fontweight='bold')
+
+            self.anim = FuncAnimation(fig, update, frames=len(timeline), interval=500, repeat=False)
+        else:
+            for pid, start, end in timeline:
+                idx = [p.pid for p in processes].index(pid)
+                color = colors[idx]
+                ax.broken_barh([(start, end - start)], (0, 1), facecolors=color, edgecolors='black', linewidth=2, alpha=0.9)
+                ax.text(start + (end - start) / 2, 0.5, pid, ha='center', va='center', fontsize=14, color='white', fontweight='bold')
+
         plt.tight_layout()
-        
-        self.canvas_widget = FigureCanvasTkAgg(fig, master=self.result_frame)
-        self.canvas_widget.draw()
-        self.canvas_widget.get_tk_widget().pack(pady=15, padx=10, fill="both", expand=True)
+        canvas = FigureCanvasTkAgg(fig, master=self.gantt_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def plot_comparison(self, results):
         fig, ax = plt.subplots(figsize=(12, 6), facecolor="#f0f8ff")
@@ -440,7 +458,6 @@ class SchedulerGUI:
         plt.xticks(rotation=45, ha="right", fontsize=12, color="#333333")
         plt.yticks(fontsize=12, color="#333333")
         
-        # Add value labels on top of bars
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2, height, f'{height:.2f}', 
@@ -448,7 +465,6 @@ class SchedulerGUI:
         
         ax.grid(True, linestyle='--', alpha=0.3, color='gray')
         ax.set_facecolor("#f0f8ff")
-        
         plt.tight_layout()
         plt.show()
 
@@ -476,8 +492,14 @@ class SchedulerGUI:
         priority_entry.insert(0, "0")
         self.result_text.delete(1.0, tk.END)
         if self.canvas_widget:
-            self.canvas_widget.destroy()
+            self.canvas_widget.get_tk_widget().destroy()
             self.canvas_widget = None
+        if self.gantt_window:
+            self.gantt_window.destroy()
+            self.gantt_window = None
+        self.anim_running = False
+        self.anim = None
+        self.timeline = None
 
     def add_tooltip(self, widget, text):
         def enter(event):
@@ -496,7 +518,6 @@ class SchedulerGUI:
         widget.bind("<Enter>", enter)
         widget.bind("<Leave>", leave)
 
-# --- Main Execution ---
 if __name__ == "__main__":
     root = ThemedTk(theme="radiance")
     app = SchedulerGUI(root)
